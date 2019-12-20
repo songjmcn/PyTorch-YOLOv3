@@ -4,8 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .weight_init import constant_init, kaiming_init, normal_init
-from ..runner import load_checkpoint
+from utils.weight_init import constant_init, kaiming_init, normal_init
+from utils.checkpoint import load_checkpoint
 
 
 STAGE_REPEATS = [4, 8, 4, 1]

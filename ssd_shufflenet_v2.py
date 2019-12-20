@@ -144,6 +144,7 @@ class ShuffleNetV2SSD(ShuffleNetV2):
             self.add_module(stage_name, nn.Sequential(*features))
             if extral_spec.return_features:
                 self.out_indices.append(extral_spec.index - 1)
+                
 
     def init_weights(self, pretrained=None):
         if isinstance(pretrained, str):

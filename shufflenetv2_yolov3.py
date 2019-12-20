@@ -10,442 +10,10 @@ from collections import OrderedDict
 from importlib import import_module
 
 from torch.utils import model_zoo
-#util function
-def constant_init(module, val, bias=0):
-    nn.init.constant_(module.weight, val)
-    if hasattr(module, 'bias') and module.bias is not None:
-        nn.init.constant_(module.bias, bias)
-
-
-def xavier_init(module, gain=1, bias=0, distribution='normal'):
-    assert distribution in ['uniform', 'normal']
-    if distribution == 'uniform':
-        nn.init.xavier_uniform_(module.weight, gain=gain)
-    else:
-        nn.init.xavier_normal_(module.weight, gain=gain)
-    if hasattr(module, 'bias') and module.bias is not None:
-        nn.init.constant_(module.bias, bias)
-
-
-def normal_init(module, mean=0, std=1, bias=0):
-    nn.init.normal_(module.weight, mean, std)
-    if hasattr(module, 'bias') and module.bias is not None:
-        nn.init.constant_(module.bias, bias)
-
-
-def uniform_init(module, a=0, b=1, bias=0):
-    nn.init.uniform_(module.weight, a, b)
-    if hasattr(module, 'bias') and module.bias is not None:
-        nn.init.constant_(module.bias, bias)
-
-
-def kaiming_init(module,
-                 mode='fan_out',
-                 nonlinearity='relu',
-                 bias=0,
-                 distribution='normal'):
-    assert distribution in ['uniform', 'normal']
-    if distribution == 'uniform':
-        nn.init.kaiming_uniform_(
-            module.weight, mode=mode, nonlinearity=nonlinearity)
-    else:
-        nn.init.kaiming_normal_(
-            module.weight, mode=mode, nonlinearity=nonlinearity)
-    if hasattr(module, 'bias') and module.bias is not None:
-        nn.init.constant_(module.bias, bias)
-
-open_mmlab_model_urls = {
-    'vgg16_caffe': 'https://s3.ap-northeast-2.amazonaws.com/open-mmlab/pretrain/third_party/vgg16_caffe-292e1171.pth',  # noqa: E501
-    'resnet50_caffe': 'https://s3.ap-northeast-2.amazonaws.com/open-mmlab/pretrain/third_party/resnet50_caffe-788b5fa3.pth',  # noqa: E501
-    'resnet101_caffe': 'https://s3.ap-northeast-2.amazonaws.com/open-mmlab/pretrain/third_party/resnet101_caffe-3ad79236.pth',  # noqa: E501
-    'resnext50_32x4d': 'https://s3.ap-northeast-2.amazonaws.com/open-mmlab/pretrain/third_party/resnext50-32x4d-0ab1a123.pth',  # noqa: E501
-    'resnext101_32x4d': 'https://s3.ap-northeast-2.amazonaws.com/open-mmlab/pretrain/third_party/resnext101_32x4d-a5af3160.pth',  # noqa: E501
-    'resnext101_64x4d': 'https://s3.ap-northeast-2.amazonaws.com/open-mmlab/pretrain/third_party/resnext101_64x4d-ee2c6f71.pth',  # noqa: E501
-    'contrib/resnet50_gn': 'https://s3.ap-northeast-2.amazonaws.com/open-mmlab/pretrain/third_party/resnet50_gn_thangvubk-ad1730dd.pth',  # noqa: E501
-    'detectron/resnet50_gn': 'https://s3.ap-northeast-2.amazonaws.com/open-mmlab/pretrain/third_party/resnet50_gn-9186a21c.pth',  # noqa: E501
-    'detectron/resnet101_gn': 'https://s3.ap-northeast-2.amazonaws.com/open-mmlab/pretrain/third_party/resnet101_gn-cac0ab98.pth'  # noqa: E501
-}  # yapf: disable
-
-
-def load_state_dict(module, state_dict, strict=False, logger=None):
-    """Load state_dict to a module.
-
-    This method is modified from :meth:`torch.nn.Module.load_state_dict`.
-    Default value for ``strict`` is set to ``False`` and the message for
-    param mismatch will be shown even if strict is False.
-
-    Args:
-        module (Module): Module that receives the state_dict.
-        state_dict (OrderedDict): Weights.
-        strict (bool): whether to strictly enforce that the keys
-            in :attr:`state_dict` match the keys returned by this module's
-            :meth:`~torch.nn.Module.state_dict` function. Default: ``False``.
-        logger (:obj:`logging.Logger`, optional): Logger to log the error
-            message. If not specified, print function will be used.
-    """
-    unexpected_keys = []
-    own_state = module.state_dict()
-    for name, param in state_dict.items():
-        if name not in own_state:
-            unexpected_keys.append(name)
-            continue
-        if isinstance(param, torch.nn.Parameter):
-            # backwards compatibility for serialized parameters
-            param = param.data
-
-        try:
-            own_state[name].copy_(param)
-        except Exception:
-            # do not raise error, since we need finetune from different models
-            warnings.warn('While copying the parameter named {}, '
-                                 'whose dimensions in the model are {} and '
-                                 'whose dimensions in the checkpoint are {}.'
-                                 .format(name, own_state[name].size(),
-                                         param.size()), RuntimeWarning)
-            # raise RuntimeError('While copying the parameter named {}, '
-            #                    'whose dimensions in the model are {} and '
-            #                    'whose dimensions in the checkpoint are {}.'
-            #                    .format(name, own_state[name].size(),
-            #                            param.size()))
-    missing_keys = set(own_state.keys()) - set(state_dict.keys())
-
-    err_msg = []
-    if unexpected_keys:
-        err_msg.append('unexpected key in source state_dict: {}\n'.format(
-            ', '.join(unexpected_keys)))
-    if missing_keys:
-        err_msg.append('missing keys in source state_dict: {}\n'.format(
-            ', '.join(missing_keys)))
-    err_msg = '\n'.join(err_msg)
-    if err_msg:
-        if strict:
-            raise RuntimeError(err_msg)
-        elif logger is not None:
-            logger.warn(err_msg)
-        else:
-            print(err_msg)
-
-
-def load_checkpoint(model,
-                    filename,
-                    map_location=None,
-                    strict=False,
-                    logger=None):
-    """Load checkpoint from a file or URI.
-
-    Args:
-        model (Module): Module to load checkpoint.
-        filename (str): Either a filepath or URL or modelzoo://xxxxxxx.
-        map_location (str): Same as :func:`torch.load`.
-        strict (bool): Whether to allow different params for the model and
-            checkpoint.
-        logger (:mod:`logging.Logger` or None): The logger for error message.
-
-    Returns:
-        dict or OrderedDict: The loaded checkpoint.
-    """
-    # load checkpoint from modelzoo or file or url
-    if filename.startswith('modelzoo://'):
-        import torchvision
-        model_urls = dict()
-        for _, name, ispkg in pkgutil.walk_packages(
-                torchvision.models.__path__):
-            if not ispkg:
-                _zoo = import_module('torchvision.models.{}'.format(name))
-                _urls = getattr(_zoo, 'model_urls')
-                model_urls.update(_urls)
-        model_name = filename[11:]
-        checkpoint = model_zoo.load_url(model_urls[model_name])
-    elif filename.startswith('open-mmlab://'):
-        model_name = filename[13:]
-        checkpoint = model_zoo.load_url(open_mmlab_model_urls[model_name])
-    elif filename.startswith(('http://', 'https://')):
-        checkpoint = model_zoo.load_url(filename)
-    else:
-        if not osp.isfile(filename):
-            raise IOError('{} is not a checkpoint file'.format(filename))
-        checkpoint = torch.load(filename, map_location=map_location)
-    # get state_dict from checkpoint
-    if isinstance(checkpoint, OrderedDict):
-        state_dict = checkpoint
-    elif isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-        state_dict = checkpoint['state_dict']
-    else:
-        raise RuntimeError(
-            'No state_dict found in checkpoint file {}'.format(filename))
-    # strip prefix of state_dict
-    if list(state_dict.keys())[0].startswith('module.'):
-        state_dict = {k[7:]: v for k, v in checkpoint['state_dict'].items()}
-    # load state_dict
-    if hasattr(model, 'module'):
-        load_state_dict(model.module, state_dict, strict, logger)
-    else:
-        load_state_dict(model, state_dict, strict, logger)
-    return checkpoint
-
-
-def weights_to_cpu(state_dict):
-    """Copy a model state_dict to cpu.
-
-    Args:
-        state_dict (OrderedDict): Model weights on GPU.
-
-    Returns:
-        OrderedDict: Model weights on GPU.
-    """
-    state_dict_cpu = OrderedDict()
-    for key, val in state_dict.items():
-        state_dict_cpu[key] = val.cpu()
-    return state_dict_cpu
-
-STAGE_REPEATS = [4, 8, 4, 1]
-
-# index 0 is invalid and should never be called.
-# only used for indexing convenience.
-STAGE_OUT_CHANNELS = {
-    0.25: [-1, 12, 24, 48, 96, 512],
-    0.5: [-1, 24, 48, 96, 192, 1024],
-    1.0: [-1, 24, 116, 232, 464, 1024],
-    1.5: [-1, 24, 176, 352, 704, 1024],
-    2.0: [-1, 24, 224, 488, 976, 2048]
-}
-
-
-def conv_bn(inp, oup, stride):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 3, stride, 1, bias=False),
-        nn.BatchNorm2d(oup),
-        nn.ReLU(inplace=True)
-    )
-
-
-def conv_1x1_bn(inp, oup):
-    return nn.Sequential(
-        nn.Conv2d(inp, oup, 1, 1, 0, bias=False),
-        nn.BatchNorm2d(oup),
-        nn.ReLU(inplace=True)
-    )
-
-
-def channel_shuffle(x, groups):
-    batchsize, num_channels, height, width = x.data.size()
-
-    channels_per_group = num_channels // groups
-
-    # reshape
-    x = x.view(batchsize, groups,
-               channels_per_group, height, width)
-
-    x = torch.transpose(x, 1, 2).contiguous()
-
-    # flatten
-    x = x.view(batchsize, -1, height, width)
-
-    return x
-
-
-class ShuffleNetV2Block(nn.Module):
-    def __init__(self, inp, oup, stride, benchmodel, dilation=1):
-        super(ShuffleNetV2Block, self).__init__()
-        self.benchmodel = benchmodel
-        self.stride = stride
-        assert stride in [1, 2]
-
-        oup_inc = oup // 2
-
-        if self.benchmodel == 1:
-            # assert inp == oup_inc
-            self.banch2 = nn.Sequential(
-                # pw
-                nn.Conv2d(oup_inc, oup_inc, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup_inc),
-                nn.ReLU(inplace=True),
-                # dw
-                nn.Conv2d(oup_inc, oup_inc, 3, stride, 1*dilation,
-                          groups=oup_inc, dilation=dilation, bias=False),
-                nn.BatchNorm2d(oup_inc),
-                # pw-linear
-                nn.Conv2d(oup_inc, oup_inc, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup_inc),
-                nn.ReLU(inplace=True),
-            )
-        else:
-            self.banch1 = nn.Sequential(
-                # dw
-                nn.Conv2d(inp, inp, 3, stride, 1*dilation, groups=inp,
-                          dilation=dilation, bias=False),
-                nn.BatchNorm2d(inp),
-                # pw-linear
-                nn.Conv2d(inp, oup_inc, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup_inc),
-                nn.ReLU(inplace=True),
-            )
-
-            self.banch2 = nn.Sequential(
-                # pw
-                nn.Conv2d(inp, oup_inc, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup_inc),
-                nn.ReLU(inplace=True),
-                # dw
-                nn.Conv2d(oup_inc, oup_inc, 3, stride, 1*dilation,
-                          groups=oup_inc, dilation=dilation, bias=False),
-                nn.BatchNorm2d(oup_inc),
-                # pw-linear
-                nn.Conv2d(oup_inc, oup_inc, 1, 1, 0, bias=False),
-                nn.BatchNorm2d(oup_inc),
-                nn.ReLU(inplace=True),
-            )
-
-    @staticmethod
-    def _concat(x, out):
-        # concatenate along channel axis
-        return torch.cat((x, out), 1)
-
-    def forward(self, x):
-        if 1 == self.benchmodel:
-            x1 = x[:, :(x.shape[1] // 2), :, :]
-            x2 = x[:, (x.shape[1] // 2):, :, :]
-            out = self._concat(x1, self.banch2(x2))
-        elif 2 == self.benchmodel:
-            out = self._concat(self.banch1(x), self.banch2(x))
-        return channel_shuffle(out, 2)
-
-
-class ShuffleNetV2(nn.Module):
-    def __init__(self,
-                 num_stages=4,
-                 out_indices=(0, 1, 2, 3),
-                 width_mult=1.,
-                 frozen_stages=-1,
-                 bn_eval=False,
-                 bn_frozen=False,
-                 image_channel=3,
-                 ):
-        """
-
-        :param num_stages:
-        :param dilations:
-        :param out_indices:
-        :param width_mult:
-        :param frozen_stages:
-        """
-        super(ShuffleNetV2, self).__init__()
-        assert 1 <= num_stages <= len(STAGE_REPEATS)
-        self.stage_repeats = STAGE_REPEATS
-
-        self.out_indices = list(out_indices)
-        self.frozen_stages = frozen_stages
-        self.bn_eval = bn_eval
-        self.bn_frozen = bn_frozen
-
-        if width_mult in STAGE_OUT_CHANNELS.keys():
-            self.stage_out_channels = STAGE_OUT_CHANNELS[width_mult]
-        else:
-            raise ValueError(""" Unsupported width_mult """)
-
-        # building first layer
-        input_channel = self.stage_out_channels[1]
-        self.conv1 = conv_bn(image_channel, input_channel, 2)
-        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-
-        self.stages = []
-        # building inverted residual blocks
-        for idxstage in range(num_stages):
-            if idxstage < 3:
-                numrepeat = self.stage_repeats[idxstage]
-                output_channel = self.stage_out_channels[idxstage + 2]
-                features = []
-                for i in range(numrepeat):
-                    if i == 0:
-                        # inp, oup, stride, benchmodel):
-                        features.append(ShuffleNetV2Block(input_channel, output_channel, 2, 2))
-                    else:
-                        features.append(ShuffleNetV2Block(input_channel, output_channel, 1, 1))
-                    input_channel = output_channel
-
-                stage_name = 'stage_%d' % (idxstage + 1)
-                self.stages.append(stage_name)
-                self.add_module(stage_name, nn.Sequential(*features))
-            else:
-                output_channel = self.stage_out_channels[idxstage + 2]
-                conv_last = conv_1x1_bn(input_channel, output_channel)
-                # stage_name = "stage_%d" % (idxstage + 1)
-                stage_name = "conv5"
-                self.stages.append(stage_name)
-                self.add_module(stage_name, conv_last)
-
-    def init_weights(self, pretrained=None):
-        if isinstance(pretrained, str):
-            logger = logging.getLogger()
-            load_checkpoint(self, pretrained, map_location='cpu', strict=False, logger=logger)
-        elif pretrained is None:
-            for m in self.modules():
-                if isinstance(m, nn.Conv2d):
-                    kaiming_init(m)
-                elif isinstance(m, nn.BatchNorm2d):
-                    constant_init(m, 1)
-        else:
-            raise TypeError('pretrained must be a str or None')
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.maxpool(x)
-
-        outs = []
-        for i, stage_name in enumerate(self.stages):
-            feature_layer = self.__getattr__(stage_name)
-            x = feature_layer(x)
-            if i in self.out_indices:
-                outs.append(x)
-        if len(outs) == 1:
-            return tuple(outs)
-        else:
-            return tuple(outs)
-
-    def train(self, mode=True):
-        super(ShuffleNetV2, self).train(mode)
-        if self.bn_eval:
-            for m in self.modules():
-                if isinstance(m, nn.BatchNorm2d):
-                    m.eval()
-                    if self.bn_frozen:
-                        for params in m.parameters():
-                            params.requires_grad = False
-        if mode and self.frozen_stages >= 0:
-            # frozen stem
-            for m in self.conv1.modules():
-                if isinstance(m, nn.BatchNorm2d):
-                    m.eval()
-                for params in m.parameters():
-                    params.requires_grad = False
-            # frozen stages
-            for i in range(0, self.frozen_stages):
-                mod = self.__getattr__(self.stages[i])
-                mod.eval()
-                for param in mod.parameters():
-                    param.requires_grad = False
-
-class Upsample(nn.Module):
-    """ nn.Upsample is deprecated """
-
-    def __init__(self, scale_factor, mode="nearest"):
-        super(Upsample, self).__init__()
-        self.scale_factor = scale_factor
-        self.mode = mode
-
-    def forward(self, x):
-        #x = F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode)
-        x=F.upsample(x,scale_factor=self.scale_factor,mode=self.mode)
-        return x
-
-
-class EmptyLayer(nn.Module):
-    """Placeholder for 'route' and 'shortcut' layers"""
-
-    def __init__(self):
-        super(EmptyLayer, self).__init__()
-
-
+from shufflenet_v2 import ShuffleNetV2
+from utils.utils import build_targets, to_cpu, non_max_suppression
+from utils.checkpoint import load_checkpoint
+from utils.weight_init import constant_init, kaiming_init, normal_init
 class YOLOLayer(nn.Module):
     """Detection layer"""
 
@@ -573,6 +141,25 @@ class YOLOLayer(nn.Module):
             }
 
             return output, total_loss
+
+
+class EmptyLayer(nn.Module):
+    """Placeholder for 'route' and 'shortcut' layers"""
+
+    def __init__(self,):
+        super(EmptyLayer, self).__init__()
+class Upsample(nn.Module):
+    """ nn.Upsample is deprecated """
+
+    def __init__(self, scale_factor, mode="nearest"):
+        super(Upsample, self).__init__()
+        self.scale_factor = scale_factor
+        self.mode = mode
+
+    def forward(self, x):
+        #x = F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode)
+        x=F.upsample(x,scale_factor=self.scale_factor,mode=self.mode)
+        return x
 #yololayer=tuple(
 #    ExtralSpec(anchor=a,num_class=n,img_dim=i)
 #    for(a,n,i) in ([ (10,14), (23,27), (37,58)],80,256)
@@ -580,8 +167,7 @@ class YOLOLayer(nn.Module):
 class ShuffleNetV2YOlOv3(ShuffleNetV2):
     def __init__(self,
                  input_size,
-                 num_stages,
-                 out_indices=(0, 1, 2, 3),
+                 num_class,
                  width_mult=1.,
                  frozen_stages=-1,
                  bn_eval=False,
@@ -591,7 +177,7 @@ class ShuffleNetV2YOlOv3(ShuffleNetV2):
                 ):
         """
         :param input_size:
-        :param num_stages:
+        :param num_stages: default use 4
         :param out_indices:
         :param frozen_stages:  No Need for YOLO
         :param bn_eval:  No Need for YOLO
@@ -600,12 +186,139 @@ class ShuffleNetV2YOlOv3(ShuffleNetV2):
         :param l2_norm_scale:
         """
         super(ShuffleNetV2YOlOv3, self).__init__(
-            num_stages=num_stages,
-            out_indices=out_indices,
+            num_stages=4,
+            out_indices=(1,2,3,),
             frozen_stages=frozen_stages,
             bn_eval=bn_eval,
             bn_frozen=bn_frozen,
             width_mult=width_mult,
             image_channel=image_channel,
         )
-        
+        assert input_size in (224,256,300,352)
+        self.input_size=input_size
+        self.num_class=num_class
+        self.yolo1_mask=3,4,5
+        self.yolo1_anchors= [10,14,  23,27,  37,58,  81,82,  135,169,  344,319]
+        self.yolo2_mask=1,2,3
+        self.yolo2_anchors=[10,14,  23,27,  37,58,  81,82,  135,169,  344,319]
+        self._build_extral_layer()
+    def _build_extral_layer(self):
+        input_channel = self.stage_out_channels[-1]
+
+        ###yolo1 layers
+        conv1=nn.Conv2d(input_channel,256,1,1,0)
+        bn1=nn.BatchNorm2d(256, momentum=0.9, eps=1e-5)
+        activation1=nn.LeakyReLU(0.1)
+        conv2=nn.Conv2d(256,512,3,1,1)
+        bn2=nn.BatchNorm2d(512, momentum=0.9, eps=1e-5)
+        activation2=nn.LeakyReLU(0.1)
+        conv3=nn.Conv2d(512,(self.num_class+5)*3,1,1,0)
+        bn3=nn.BatchNorm2d((self.num_class+5)*3, momentum=0.9, eps=1e-5)
+        activation3=nn.LeakyReLU(0.1)
+
+        anchor_idxs =self.yolo1_mask
+        anchors = self.yolo1_anchors
+        anchors = [(anchors[i], anchors[i + 1]) for i in range(0, len(anchors), 2)]
+        anchors = [anchors[i] for i in anchor_idxs]
+        yolo1=YOLOLayer(anchors,self.num_class,self.input_size)
+        '''
+        self.add_module("yolo1_conv1",conv1)
+        self.add_module("yolo1_bn1",bn1)
+        self.add_module("yolo1_leaky1",activation1)
+        self.add_module("yolo1_conv2",conv2)
+        self.add_module("yolo1_bn2",bn2)
+        self.add_module("yolo1_leaky2",activation2)
+        self.add_module("yolo1_conv3",conv3)
+        self.add_module("yolo1_bn3",bn3)
+        self.add_module("yolo1_leaky3",activation3)
+        self.add_module("yolo1_detection",yolo1)
+        '''
+        self.add_module("yolo1_conv1",nn.Sequential(conv1,bn1,activation1))
+        self.stages.append("yolo1_conv1")
+        self.add_module("yolo1_conv2",nn.Sequential(conv2,bn2,activation2))
+        self.stages.append("yolo1_conv2")
+        self.add_module("yolo1_conv3",nn.Sequential(conv3,bn3,activation3))
+        self.stages.append("yolo1_conv3")
+        self.add_module("yolo1_detection",yolo1)
+        self.stages.append("yolo1_detection")
+
+        ###yolo2 layer2
+        self.add_module("yolo2_route1",EmptyLayer())
+        self.stages.append("yolo2_route1")
+        self.add_module("yolo2_conv1",
+        nn.Sequential(
+            nn.Conv2d(256,128,1,1,0),
+            nn.BatchNorm2d(256,momentum=0.9,eps=1e-5),
+            nn.LeakyReLU(0.1)
+        ))
+        self.stages.append("yolo2_conv1")
+        self.add_module("yolo2_upsample",Upsample(128,mode="nearest"))
+        self.stages.append("yolo2_upsample")
+        self.add_module("yolo2_route2",EmptyLayer())
+        self.stages.append("yolo2_route2")
+        self.add_module("yolo2_conv2",
+        nn.Sequential(
+            nn.Conv2d(384,256,3,1,1),
+            nn.BatchNorm2d(384,momentum=0.9,eps=1e-5),
+            nn.LeakyReLU(0.1)
+        ))
+        self.stages.append("yolo2_conv2")
+        self.add_module("yolo2_conv3",
+        nn.Sequential(
+            nn.Conv2d(384,(self.num_class+5)*3,1,1,0)
+        ))
+        self.stages.append("yolo2_conv3")
+        anchor_idxs =self.yolo2_mask
+        anchors = self.yolo2_anchors
+        anchors = [(anchors[i], anchors[i + 1]) for i in range(0, len(anchors), 2)]
+        anchors = [anchors[i] for i in anchor_idxs]
+        self.add_module("yolo2_detection",YOLOLayer(anchors,self.num_class,self.input_size))
+        self.stages.append("yolo2_detection")
+    def forward(self,x,targets=None):
+        img_dim=x.shape[2]
+        layer_outputs, yolo_outputs=[],[]
+        loss=0
+        x = self.conv1(x)
+        x = self.maxpool(x)
+        layer_outputs.append(x)
+        for i,stage_name in enumerate(self.stages):
+            if stage_name=="yolo2_route1":
+                x=torch.cat((x),1)
+            elif stage_name=="yolo2_route2":
+                input1=layer_outputs[4]
+                input2=x
+                x=torch.cat((input1,input2),1)
+            elif stage_name.find("detection")!=-1:
+                feature_layer=self.__getattr__(stage_name)
+                x,layer_loss=feature_layer(x,targets,img_dim)
+                loss+=layer_loss
+                yolo_outputs.append(x)
+            else:
+                feature_layer=self.__getattr__(stage_name)
+                x=feature_layer(x)
+            layer_outputs.append(x)
+        yolo_outputs=to_cpu(torch.cat(yolo_outputs,1))
+        return yolo_outputs if targets is None else (loss,yolo_outputs)
+    def init_weights(self,pretrained=None):
+        if isinstance(pretrained, str):
+            logger = logging.getLogger()
+            logger.info("Body load checkpoint")
+            load_checkpoint(self, pretrained, map_location='cpu', strict=False, logger=logger)
+        elif pretrained is None:
+            for m in self.modules():
+                if isinstance(m, nn.Conv2d):
+                    kaiming_init(m)
+                elif isinstance(m, nn.BatchNorm2d):
+                    constant_init(m, 1)
+                elif isinstance(m, nn.Linear):
+                    normal_init(m, std=0.01)
+        else:
+            raise TypeError('pretrained must be a str or None')
+if __name__=="__main__":
+    yolo=ShuffleNetV2YOlOv3(256,3)
+    print(yolo)
+            
+
+
+
+
