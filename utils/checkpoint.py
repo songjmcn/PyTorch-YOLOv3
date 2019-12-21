@@ -298,7 +298,7 @@ def save_checkpoint(model, filename, optimizer=None, meta=None):
             type(meta)))
     meta.update(mmcv_version=mmcv.__version__, time=time.asctime())
 
-    mmcv.mkdir_or_exist(osp.dirname(filename))
+    mkdir_or_exist(osp.dirname(filename))
     if hasattr(model, 'module'):
         model = model.module
 

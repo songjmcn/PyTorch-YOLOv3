@@ -44,7 +44,7 @@ class YOLOLayer(nn.Module):
         self.anchor_h = self.scaled_anchors[:, 1:2].view((1, self.num_anchors, 1, 1))
 
     def forward(self, x, targets=None, img_dim=None):
-
+        print('yolo forward')
         # Tensors for cuda support
         FloatTensor = torch.cuda.FloatTensor if x.is_cuda else torch.FloatTensor
         LongTensor = torch.cuda.LongTensor if x.is_cuda else torch.LongTensor
@@ -89,7 +89,8 @@ class YOLOLayer(nn.Module):
         )
 
         if targets is None:
-            return output, 0
+            #return (output, 0)
+            return (output,torch.Tensor([0]))
         else:
             iou_scores, class_mask, obj_mask, noobj_mask, tx, ty, tw, th, tcls, tconf = build_targets(
                 pred_boxes=pred_boxes,
@@ -140,7 +141,7 @@ class YOLOLayer(nn.Module):
                 "grid_size": grid_size,
             }
 
-            return output, total_loss
+            return (output, total_loss)
 
 
 class EmptyLayer(nn.Module):
@@ -203,8 +204,10 @@ class ShuffleNetV2YOlOv3(ShuffleNetV2):
         self.yolo2_anchors=[10,14,  23,27,  37,58,  81,82,  135,169,  344,319]
         self._build_extral_layer()
     def _build_extral_layer(self):
+        #print(self.stage_out_channels)
         input_channel = self.stage_out_channels[-1]
-
+        input_channel2=self.stage_out_channels[-3]
+        #print(self.stage_out_channels)
         ###yolo1 layers
         conv1=nn.Conv2d(input_channel,256,1,1,0)
         bn1=nn.BatchNorm2d(256, momentum=0.9, eps=1e-5)
@@ -248,24 +251,27 @@ class ShuffleNetV2YOlOv3(ShuffleNetV2):
         self.add_module("yolo2_conv1",
         nn.Sequential(
             nn.Conv2d(256,128,1,1,0),
-            nn.BatchNorm2d(256,momentum=0.9,eps=1e-5),
+            nn.BatchNorm2d(128,momentum=0.9,eps=1e-5),
             nn.LeakyReLU(0.1)
         ))
         self.stages.append("yolo2_conv1")
-        self.add_module("yolo2_upsample",Upsample(128,mode="nearest"))
+        self.add_module("yolo2_upsample",Upsample(2,mode="nearest"))
         self.stages.append("yolo2_upsample")
         self.add_module("yolo2_route2",EmptyLayer())
         self.stages.append("yolo2_route2")
+        conv_channel=input_channel2+128
         self.add_module("yolo2_conv2",
         nn.Sequential(
-            nn.Conv2d(384,256,3,1,1),
-            nn.BatchNorm2d(384,momentum=0.9,eps=1e-5),
+            nn.Conv2d(conv_channel,256,3,1,1),
+            nn.BatchNorm2d(256,momentum=0.9,eps=1e-5),
             nn.LeakyReLU(0.1)
         ))
         self.stages.append("yolo2_conv2")
         self.add_module("yolo2_conv3",
         nn.Sequential(
-            nn.Conv2d(384,(self.num_class+5)*3,1,1,0)
+            nn.Conv2d(256,(self.num_class+5)*3,1,1,0),
+            nn.BatchNorm2d((self.num_class+5)*3,momentum=0.9,eps=1e-5),
+            nn.LeakyReLU(0.1)
         ))
         self.stages.append("yolo2_conv3")
         anchor_idxs =self.yolo2_mask
@@ -276,27 +282,62 @@ class ShuffleNetV2YOlOv3(ShuffleNetV2):
         self.stages.append("yolo2_detection")
     def forward(self,x,targets=None):
         img_dim=x.shape[2]
-        layer_outputs, yolo_outputs=[],[]
+        layer_outputs, yolo_outputs={},[]
         loss=0
         x = self.conv1(x)
         x = self.maxpool(x)
-        layer_outputs.append(x)
-        for i,stage_name in enumerate(self.stages):
-            if stage_name=="yolo2_route1":
-                x=torch.cat((x),1)
-            elif stage_name=="yolo2_route2":
-                input1=layer_outputs[4]
-                input2=x
-                x=torch.cat((input1,input2),1)
-            elif stage_name.find("detection")!=-1:
+        layer_outputs["stage_0"]=x
+        for (i,stage_name) in enumerate(self.stages):
+            if stage_name=="yolo1_conv1":
                 feature_layer=self.__getattr__(stage_name)
-                x,layer_loss=feature_layer(x,targets,img_dim)
+                x=feature_layer(layer_outputs["conv5"])
+            elif stage_name=="yolo1_conv2":
+                feature_layer=self.__getattr__(stage_name)
+                x=feature_layer(layer_outputs["yolo1_conv1"])
+            elif stage_name=="yolo1_conv3":
+                feature_layer=self.__getattr__(stage_name)
+                x=feature_layer(layer_outputs["yolo1_conv2"])
+            elif stage_name=="yolo1_detection":
+                feature_layer=self.__getattr__(stage_name)
+                #print(feature_layer)
+                x,layer_loss=feature_layer(layer_outputs["yolo1_conv3"],targets,img_dim)
+                loss+=layer_loss
+                yolo_outputs.append(x)
+            elif stage_name=="yolo2_route1":
+                x=layer_outputs["yolo1_conv1"]
+                #print("yolo2_route1:",x.shape)
+            elif stage_name=="yolo2_conv1":
+                feature_layer=self.__getattr__(stage_name)
+                x=feature_layer(layer_outputs["yolo2_route1"])
+                #print("yolo2_conv1:",x.shape)
+            elif stage_name=="yolo2_upsample":
+                feature_layer=self.__getattr__(stage_name)
+                x=feature_layer(layer_outputs["yolo2_conv1"])
+                #print("yolo2_upsample:",x.shape)
+            elif stage_name=="yolo2_route2":
+                input1=layer_outputs["stage_2"]
+                input2=layer_outputs["yolo2_upsample"]
+                #print("yolo2_route2:",input1.shape,input2.shape)
+                x=torch.cat((input1,input2),1)
+            elif stage_name=="yolo2_conv2":
+                feature_layer=self.__getattr__(stage_name)
+                #print(feature_layer)
+                x=feature_layer(layer_outputs["yolo2_route2"])
+            elif stage_name=="yolo2_conv3":
+                feature_layer=self.__getattr__(stage_name)
+                #print(feature_layer)
+                x=feature_layer(layer_outputs["yolo2_conv2"])
+            elif stage_name=="yolo2_detection":
+                feature_layer=self.__getattr__(stage_name)
+                #print(feature_layer)
+                x,layer_loss=feature_layer(layer_outputs["yolo2_conv3"],targets,img_dim)
                 loss+=layer_loss
                 yolo_outputs.append(x)
             else:
                 feature_layer=self.__getattr__(stage_name)
+                #print(stage_name,feature_layer)
                 x=feature_layer(x)
-            layer_outputs.append(x)
+            layer_outputs[stage_name]=x
         yolo_outputs=to_cpu(torch.cat(yolo_outputs,1))
         return yolo_outputs if targets is None else (loss,yolo_outputs)
     def init_weights(self,pretrained=None):
@@ -315,8 +356,10 @@ class ShuffleNetV2YOlOv3(ShuffleNetV2):
         else:
             raise TypeError('pretrained must be a str or None')
 if __name__=="__main__":
-    yolo=ShuffleNetV2YOlOv3(256,3)
-    print(yolo)
+    from torchsummary import summary
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    yolo=ShuffleNetV2YOlOv3(256,3).to(device)
+    summary(yolo,(3,256,256))
             
 
 
